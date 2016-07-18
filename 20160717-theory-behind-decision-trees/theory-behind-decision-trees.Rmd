@@ -1,0 +1,216 @@
+---
+title: "Theory behind decision trees"
+author: "Artem Larionov"
+date: "July 17, 2016"
+output: html_document
+---
+
+Classification is a big part of Data Science, and one of useful tools for that is decision trees.
+They are not only good for predictions, but also are easy to understand and interpret.
+
+For any framework or programming language you choose you will find a lot of tools for decision trees, however it's also important to understand what is going on under the hood, so in this article we will build our own simple implementation of a decision tree.
+
+Basic idea is to split data based on different features to build a tree of decisions which will lead to a classification of a data point.
+
+```{r}
+data.frame(x=c(1,2,3,11,12,13),y=as.factor(c('small', 'small', 'small', 'big', 'big','big')))
+```
+
+For this simple dataset, we can use just one split `x < 10`, to assign the correct label.
+
+Usually the dataset won't split flawlessly: there still will be data points with different labels in the same subset. In this case, we can label the set based on majority and also calculate the error accounting for data points with different labels.
+
+Another important moment is a generalization, if we need only to describe our existing data, we can make really deep decision tree, which will work perfectly on our training dataset, but such strict decision tree most likely won't work well on a new data - it's an overfitting in case of decision trees.
+
+So we get our data and split it into subsets, then we check stop criteria and split subsets if those criteria haven't been met. So what would be a sign for us to stop splitting our data?
+
+* If all data points in current node have the same label
+* If we've used all features to consider a split already
+* If we've reached pre-defined maximum depth of the tree
+
+So, we use features to split our data, but how do we choose the feature? 
+For each feature we calculate errors for subsets we get after a split and choose the feature with the smallest error.
+
+Ok, we've built a tree, what's next?
+In order to predict new data with such tree, we just evaluate it against all split criteria and see which leaf our new data goes to. 
+Then we just use the label of the leaf to predict the label of our new data!
+
+Let's do some coding. For our example we will do classification of risky loans based on the data from [Lending Club](https://www.lendingclub.com/info/download-data.action).
+```{r, message=FALSE}
+library(dplyr)
+library(caret)
+```
+
+We will predict if the loan is going to be `safe`(fully paid) or `risky`(charged off), we will use `1` as value for our safe loans, and `0` for risky loans.
+```{r}
+set.seed(1)
+setwd('~/articles/20160717-theory-behind-decision-trees/')
+loans <- read.csv('LoanStats3a.csv', stringsAsFactors = F, skip = 1)
+safe_loans  <- loans[loans$loan_status == 'Fully Paid',]
+risky_loans <- loans[loans$loan_status == 'Charged Off',]
+safe_loans$safe  <- 1
+risky_loans$safe <- 0
+```
+
+```{r}
+dim(safe_loans)
+dim(risky_loans)
+```
+
+In our dataset we have much more safe loans. Imbalanced data might be a problem, so we will take the same amount of loans of both types.
+```{r}
+safe_loans <- safe_loans[sample(nrow(safe_loans), nrow(risky_loans)),]
+```
+
+We won't spend much time on feature selection and just get few most important features for our example.
+```{r}
+loans <- select(rbind(safe_loans, risky_loans), grade, term, home_ownership, emp_length, safe)
+```
+
+Now let's take a look at our data.
+```{r}
+head(loans)
+```
+
+To avoid getting lost in lots of details we will focus on a simple binary decision tree, for this purpose, we will convert our factor variables into binary features. 
+```{r}
+loans.data <- data.frame(safe = loans$safe)
+loans.data <- cbind(loans.data, model.matrix(~loans$grade - 1))
+loans.data <- cbind(loans.data, model.matrix(~loans$term - 1))
+loans.data <- cbind(loans.data, model.matrix(~loans$home_ownership - 1))
+loans.data <- cbind(loans.data, model.matrix(~loans$emp_length - 1))
+loans.data[1:6,1:6]
+```
+
+To check a performance of our tree we will split our data into two datasets, one we will use to train the tree, and another to check its performance.
+```{r}
+inTrain <- createDataPartition(loans.data$safe, p = 0.5, list = F)
+train_data <- loans.data[inTrain,] 
+test_data  <- loans.data[-inTrain,]
+```
+
+Now, the most interesting part, the implementation!
+```{r}
+calculate_error <- function (labels) {
+  # if we use a label of majority as a label of the leaf
+  # the minority is the error of the leaf
+  min(sum(labels == 1), sum(labels == 0))
+}  
+
+splitting_feature <- function (data, features, target) {
+  # we calculate error of splitting for every feature
+  errors <- sapply(
+    features, 
+    function (feature) {
+      left_labels  <- data[data[feature] == 0,][[target]]
+      right_labels <- data[data[feature] == 1,][[target]]
+      left_error  <- calculate_error(left_labels)            
+      right_error <- calculate_error(right_labels)
+      error = (left_error + right_error) / length(data)
+    }
+  )
+  # and take the feature with the lowest error
+  names(which.min(errors))
+}
+
+create_leaf <- function (labels) {
+  # we will use a label of majority as a label of the leaf
+  positive = sum(labels == 1)
+  negative = sum(labels == 0)
+  
+  list(
+    splitting_feature = NULL,
+    left              = NULL,
+    right             = NULL,
+    is_leaf           = TRUE,
+    prediction        = ifelse(positive > negative, 1, 0)
+  )
+}
+
+mytree_create <- function(data, features, target, current_depth = 0, max_depth = 10){
+  remaining_features = features
+  
+  target_values = data[[target]]
+  
+  # If all datapoints in current node have the same label
+  if (calculate_error(target_values) == 0) {
+    return(create_leaf(target_values))
+  }
+  
+  # If we've used all features to consider a split already
+  if (length(remaining_features) == 0) {
+    return(create_leaf(target_values))    
+  }
+  
+  # If we reached pre-defined maximum depth of the tree
+  if (current_depth >= max_depth) {
+    return(create_leaf(target_values))
+  }
+  
+  # we will find the feature to make a split
+  splitting_feature = splitting_feature(data, remaining_features, target)
+  
+  # and make a split 
+  left_split  = data[data[splitting_feature] == 0,]
+  right_split = data[data[splitting_feature] == 1,]
+  
+  # we remove feature we just used
+  remaining_features = remaining_features[-which(remaining_features == splitting_feature)]
+  
+  # if one of the subsets is the original set, 
+  # create a leaf using this set
+  if (nrow(left_split) == nrow(data)) {
+    return(create_leaf(left_split[[target]]))
+  }
+  if (nrow(right_split) == nrow(data)) {
+    return(create_leaf(right_split[[target]]))
+  }
+  
+  # Keep splitting
+  left_tree  = mytree_create(left_split, remaining_features, target, current_depth + 1, max_depth) 
+  right_tree = mytree_create(right_split, remaining_features, target, current_depth + 1, max_depth)        
+  
+  # return the tree 
+  list(
+    is_leaf = FALSE, 
+    prediction = NULL,
+    splitting_feature = splitting_feature,
+    left = left_tree, 
+    right = right_tree
+  )
+}
+
+mytree_predict <- function (tree, data) {   
+  # return prediction if the node is a leaf node.
+  if (tree$is_leaf) {
+    return(tree$prediction)
+  }
+
+  # split on feature.
+  split_feature_value = data[[tree$splitting_feature]]
+  
+  # keep splitting down the tree
+  ifelse(
+    split_feature_value == 0,
+    mytree_predict(tree$left, data),
+    mytree_predict(tree$right, data)
+  )
+}
+```
+
+Now we have our decision tree implementation and can check how good it performs!
+
+```{r}
+# train the tree on training data
+my_decision_tree <- mytree_create(train_data, colnames(train_data[-1]), 'safe', max_depth = 6)
+
+# predict labels for test data
+pred <- mytree_predict(my_decision_tree, test_data)
+
+# compare predicted and real labels
+confusionMatrix(pred, test_data$safe)
+```
+
+62% of accuracy! It's quite good for such simple solution :)
+
+I hope now you will better understand how such algorithms work.
