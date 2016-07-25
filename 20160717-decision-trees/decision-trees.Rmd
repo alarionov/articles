@@ -1,0 +1,298 @@
+---
+title: "Decision trees"
+author: "Artem Larionov"
+date: "July 17, 2016"
+output: html_document
+abstract: "This article contains an example of using rpart package for classification based on decision trees and explains the basic principles of the algorithm behind decision trees."
+keywords: "decision tree, demostration"
+---
+
+```{r, echo = FALSE, message=FALSE}
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+set.seed(1)
+setwd('~/articles/20160717-decision-trees/')
+```
+
+## Introduction
+
+Classification is a big part of Data Science, and [decision trees](https://en.wikipedia.org/wiki/Decision_tree) are among the tools that have proved useful for it. They are an effective instrument in predicting and additionally, it is easy to understand and interpret them. For any framework or programming language you choose, you will find a lot of tools for decision trees. It is important, though, to understand how exactly it all works as well.
+
+## What we are going to do
+
+As a case study, we will do a simple analysis of [Lending Club loans data](https://www.lendingclub.com/info/download-data.action) with [rpart package](https://cran.r-project.org/web/packages/rpart/index.html) and then, we will write our own implementation to understand how it works.
+All examples in this article will be in [R](https://en.wikipedia.org/wiki/R_(programming_language)). If you are not familiar with this language, you may want to [try R](http://tryr.codeschool.com/) first.
+
+## Exploring the data
+
+The dataset contains complete loan data, including the current loan status (Current, Late, Fully Paid, etc.) and latest payment information. 
+
+```{r}
+all_loans <- read.csv('LoanStats3a.csv', stringsAsFactors = F, skip = 1)
+```
+
+For our analysis we will focus only on a few attributes of the dataset:
+
+* Lending Club assigned loan grade (`grade`).
+* The number of payments on the loan (`term`). Values are in months and can be either 36 or 60.
+* The home ownership status (`home_ownership`) provided by the borrower during registration. Our values are: RENT, OWN, MORTGAGE, OTHER.
+* Employment length (`emp_length`) in years. Possible values are between 0 and 10 where 0 means less than one year and 10 means ten or more years.
+* Current status of the loan (`loan_status`).
+
+```{r}
+all_loans <- select(all_loans, grade, term, home_ownership, emp_length, loan_status)
+```
+
+To those who are interested, the definitions of all attributes can be found in the [Data Dictionary](https://resources.lendingclub.com/LCDataDictionary.xlsx).
+
+We will consider only `Fully paid` (`safe`) and `Charged Off` (`risky`) loans.
+
+```{r}
+safe_loans  <- all_loans[all_loans$loan_status == 'Fully Paid',]
+risky_loans <- all_loans[all_loans$loan_status == 'Charged Off',]
+```
+
+What we are going do now is predicting whether the loan turns out to be `safe` or `risky`. 
+For this purpose, we will use `1` as value for our safe loans, and `0` for risky loans.
+
+```{r}
+safe_loans$safe  <- 1
+risky_loans$safe <- 0
+```
+
+Let's check how many loans of each type we have.
+
+```{r}
+nrow(safe_loans)
+nrow(risky_loans)
+```
+
+In our dataset, we have much more safe loans. Imbalanced data might be a problem, so we will take the same amount of loans of both types.
+
+```{r}
+safe_loans <- safe_loans[1:nrow(risky_loans),]
+```
+
+Now let's combine the loans in one dataset.
+
+```{r}
+loans <- rbind(safe_loans, risky_loans)
+```
+
+## Data transformations
+
+To avoid getting lost in lots of details, we will focus on a simple binary decision tree and convert our factor variables into binary features.
+Let’s check what’s the difference on the transformation of `grade` attribute.
+
+```{r}
+knitr::kable(head(loans[1]))
+knitr::kable(head(model.matrix(~loans$grade - 1)))
+```
+
+And make the transformation for all attributes.
+
+```{r}
+loans.data <- data.frame(safe = loans$safe)
+loans.data <- cbind(loans.data, model.matrix(~loans$grade - 1))
+loans.data <- cbind(loans.data, model.matrix(~loans$term - 1))
+loans.data <- cbind(loans.data, model.matrix(~loans$home_ownership - 1))
+loans.data <- cbind(loans.data, model.matrix(~loans$emp_length - 1))
+```
+
+To check the performance of the prediction we will split our data into training and testing subsets - [createDataPartition](http://www.inside-r.org/node/87010) is quite useful for such operations.
+
+```{r}
+inTrain <- createDataPartition(loans.data$safe, p = 0.5, list = F)
+train_data <- loans.data[inTrain,] 
+test_data  <- loans.data[-inTrain,]
+```
+
+We will use the training subset to train the tree, and the testing one to check its performance.
+
+## Using rpart
+
+Let's check what `rpart` will give us.
+
+```{r}
+# train rpart tree on training data 
+rpart_tree <- rpart(safe ~ ., train_data, method = 'class')
+
+# predict labels for test data using rpart tree
+rpart_pred <- predict(rpart_tree, test_data, type = 'class')
+
+# compare labels predicted by rpart to real ones
+confusionMatrix(rpart_pred, test_data$safe)
+```
+
+The metric we are looking for is `Accuracy`(for more details read [the help page for confusionMatrix](http://www.inside-r.org/node/86995)).
+
+So, `65%` is better than randomly guessing (which is `50%` in our case). 
+Not bad, considering how many simplifications we made.
+
+## Interpreting the decision tree
+
+But what are those decisions based on? Let's take a look, we can use [rpart.plot](http://www.milbo.org/rpart-plot/prp.pdf) package to print the decision tree for our model.
+
+```{r}
+rpart.plot(rpart_tree)
+```
+
+We can see that the model considers if the loan has an `A` grade first - all `A` loans go to `safe` category.
+Then, the model checks if it's a `B` grade, if it's not even `B`, loan is considered to be `risky`. 
+And finally, for all `B` loans, the model considers if it's `short term` or `long term` loan: `short term` loans are considered to be `risky` and `long term` loans are considered to be `safe`.
+
+## Implementation
+
+As we can see above, the idea is to split the data based on different features to build a tree of decisions, which will lead to the classification of a data point. 
+
+So, we use features to split our data, but how do we choose the feature? 
+Usually, the dataset won't split flawlessly: there will be data points with different labels in the same subset. In such case, we can label the set based on majority and also calculate the error accounting for data points with different labels. For each feature we calculate errors for subsets we get after a split and choose the feature with the smallest error.
+
+```{r}
+calculate_error <- function (labels) {
+  # if we use a label of majority as a label of the leaf
+  # the minority is the error of the leaf
+  min(sum(labels == 1), sum(labels == 0))
+}
+
+splitting_feature <- function (data, features, target) {
+  # we calculate error of splitting for every feature
+  errors <- sapply(
+    features, 
+    function (feature) {
+      left_labels  <- data[data[feature] == 0,][[target]]
+      right_labels <- data[data[feature] == 1,][[target]]
+      left_error  <- calculate_error(left_labels)            
+      right_error <- calculate_error(right_labels)
+      error = (left_error + right_error) / length(data)
+    }
+  )
+  # and take the feature with the lowest error
+  names(which.min(errors))
+}
+```
+
+Another important moment is a generalization, if we need only need to describe our existing data, we can make a really deep decision tree, which will work perfectly on our training dataset. Such decision tree most likely won't work well on a new data - it's an overfitting in case of decision trees.
+
+So, we get our data and split it into subsets and afterwards we check the stop criteria and split subsets if those criteria are not met. However, we will need to stop splitting our data in the following situations: 
+
+* if all data points in current node have the same label,
+* if we've used all features to consider a split already,
+* if we've reached pre-defined maximum depth of the tree.
+
+Ok, we've built a tree, what's next?
+In order to predict new data with our tree, we just evaluate it against all split criteria and see which leaf our new data goes to. 
+Then we just use the label of the leaf to predict the label of our new data.
+
+```{r}
+mytree_predict <- function (tree, data) {   
+  # return prediction if the node is a leaf node.
+  if (tree$is_leaf) {
+    return(tree$prediction)
+  }
+  
+  # split on feature.
+  split_feature_value = data[[tree$splitting_feature]]
+  
+  # keep splitting down the tree
+  ifelse(
+    split_feature_value == 0,
+    mytree_predict(tree$left, data),
+    mytree_predict(tree$right, data)
+  )
+}
+```
+
+You can find the rest of the code in [this file](/articles/20160717-decision-trees/decision-trees.R).
+
+```{r, echo=FALSE, message=FALSE}
+create_leaf <- function (labels) {
+  # we will use a label of majority as a label of the leaf
+  positive = sum(labels == 1)
+  negative = sum(labels == 0)
+  
+  list(
+    splitting_feature = NULL,
+    left              = NULL,
+    right             = NULL,
+    is_leaf           = TRUE,
+    prediction        = ifelse(positive > negative, 1, 0)
+  )
+}
+
+mytree_create <- function(data, features, target, current_depth = 0, max_depth = 10){
+  remaining_features = features
+  
+  target_values = data[[target]]
+  
+  # If all datapoints in current node have the same label
+  if (calculate_error(target_values) == 0) {
+    return(create_leaf(target_values))
+  }
+  
+  # If we've used all features to consider a split already
+  if (length(remaining_features) == 0) {
+    return(create_leaf(target_values))    
+  }
+  
+  # If we reached pre-defined maximum depth of the tree
+  if (current_depth >= max_depth) {
+    return(create_leaf(target_values))
+  }
+  
+  # we will find the feature to make a split
+  splitting_feature = splitting_feature(data, remaining_features, target)
+  
+  # and make a split 
+  left_split  = data[data[splitting_feature] == 0,]
+  right_split = data[data[splitting_feature] == 1,]
+  
+  # we remove feature we just used
+  remaining_features = remaining_features[-which(remaining_features == splitting_feature)]
+  
+  # if one of the subsets is the original set, 
+  # create a leaf using this set
+  if (nrow(left_split) == nrow(data)) {
+    return(create_leaf(left_split[[target]]))
+  }
+  if (nrow(right_split) == nrow(data)) {
+    return(create_leaf(right_split[[target]]))
+  }
+  
+  # Keep splitting
+  left_tree  = mytree_create(left_split, remaining_features, target, current_depth + 1, max_depth) 
+  right_tree = mytree_create(right_split, remaining_features, target, current_depth + 1, max_depth)        
+  
+  # return the tree 
+  list(
+    is_leaf = FALSE, 
+    prediction = NULL,
+    splitting_feature = splitting_feature,
+    left = left_tree, 
+    right = right_tree
+  )
+}
+```
+
+## Testing and comparison
+
+Now we have our decision tree implementation and can check how well it performs!
+
+```{r}
+# train the tree on training data
+my_decision_tree <- mytree_create(train_data, colnames(train_data[-1]), 'safe', max_depth = 6)
+
+# predict labels for test data
+pred <- mytree_predict(my_decision_tree, test_data)
+
+# compare predicted and real labels
+confusionMatrix(pred, test_data$safe)
+```
+
+`64%` of accuracy! Quite close to `rpart`.
+
+## PS
+
+Even though for this simple example our implementation is not significantly worse, you should remember that this is just a demostration of basic principles of decision trees, and for more complex data it's better to consider professional packages like `rpart`.

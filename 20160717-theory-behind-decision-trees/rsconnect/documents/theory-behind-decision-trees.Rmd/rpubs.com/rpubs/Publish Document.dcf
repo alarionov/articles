@@ -1,7 +1,0 @@
-name: Publish Document
-account: rpubs
-server: rpubs.com
-appId: https://api.rpubs.com/api/v1/document/196849/4b372598f77e4772a433a583cf002617
-bundleId: https://api.rpubs.com/api/v1/document/196849/4b372598f77e4772a433a583cf002617
-url: http://rpubs.com/alarionov/196849
-when: 1468851368.04227
