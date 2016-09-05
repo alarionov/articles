@@ -1,0 +1,216 @@
+---
+title: "Possible features for survey analysis"
+author: "Artem Larionov"
+date: "September 4, 2016"
+output: html_document
+abstract: In this article I've applied a few techniques of text analysis to see which ones would be useful to analyze surveys.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE)
+setwd('~/articles/20160904-survey-analysis')
+
+library(dplyr)
+library(syuzhet)
+library(tm)
+library(RWeka)
+library(SnowballC)  
+library(stringr)
+library(wordcloud)
+library(RColorBrewer)
+library(plyr)
+library(ggplot2)
+library(easyGgplot2)
+
+prepareString <- function (x) {
+  x <- removeWords(x, stopwords())
+  x <- iconv(x, 'latin1', 'ASCII', sub='')
+  x <- tolower(x)
+  x <- removePunctuation(x)
+  x <- removeNumbers(x)
+  x <- stripWhitespace(x)
+  str_trim(x)
+}
+
+buildDTMatrix <- function (corpus, min, max, language = 'english', weighting = weightTf) {
+  DocumentTermMatrix(
+    corpus, 
+    control = list(
+      tokenize = function(x) {
+        NGramTokenizer(x, Weka_control(min = min, max = max))
+      },
+      language = language,
+      stemWords = FALSE,
+      wordLengths=c(3,Inf),
+      weighting = weighting
+    )
+  )
+}
+
+question.text <- function (id) { questions[questions$id == id,]$body }
+topic.id      <- function (id) { questions[questions$id == id,]$topic_id }
+topic.title   <- function (id) { topics[topics$id == id,]$title } 
+
+topics    <- read.csv('topics.csv', stringsAsFactors = FALSE)
+questions <- read.csv('questions.csv', stringsAsFactors = FALSE) 
+answers   <- read.csv('answers.csv', stringsAsFactors = FALSE)
+
+answers <- subset(answers, company_id == 3)
+answers$question <- sapply(answers$poll_id, question.text)
+answers$topic_id <- as.factor(sapply(answers$poll_id, topic.id))
+answers$topic    <- sapply(answers$topic_id, topic.title)
+answers$answer_sentiment <- get_nrc_sentiment(answers$text)[1:8]
+answers$question_sentiment <- get_nrc_sentiment(answers$question)[1:8]
+
+poll_87 <- subset(answers, poll_id == 87)
+poll_32 <- subset(answers, poll_id == 32)
+poll_59 <- subset(answers, poll_id == 59)
+poll_62 <- subset(answers, poll_id == 62)
+
+custom_questions <- subset(questions, topic_id == 7 & company_id == 3)
+```
+
+# Introduction
+
+Right now I'm not going to focus on details of the implementation, but if you are interested, you can find the source code [here](https://github.com/alarionov/articles/blob/gh-pages/20160904-survey-analysis/20160904-survey-analysis.Rmd).
+
+Let's start with word clouds for questions and answers:
+
+```{r}
+par(mfrow=c(1,2))
+wordcloud(answers$question, random.order = F, colors = brewer.pal(6, 'Dark2'), main = 'Word Cloud for Questions')
+wordcloud(answers$text, random.order = F, colors = brewer.pal(6, 'Dark2'), main = 'Word Cloud for Answers')
+```
+
+As we could expect, the questions are focused on "what" and "how" about "company" and "work".
+Answers look quite positive with a big "good" in the middle, the biggest "know" is probably related to "don't" right above it :). It might be useful to find those answers and questions to understand whether the employees don't know something important, or just haven't gotten familiar with the survey tool yet :). 
+
+# Word frequency
+
+Let's dig deeper. Word frequency can be useful for some kinds of questions because it will summarize all answers into the most common words.
+
+```{r}
+corpus <- Corpus(VectorSource(paste(poll_62$text, collapse = ' ')))
+corpus <- tm_map(corpus, prepareString)
+corpus <- tm_map(corpus, PlainTextDocument)
+unigram_sparse_dtm <- buildDTMatrix(corpus, 1, 1)
+matrix <- as.matrix(unigram_sparse_dtm)
+uni_sorted <- matrix[1,order(matrix[1,])]
+par(mar=c(5,5,4,2) + 0.1, mfrow=c(1,1))
+barplot(tail(uni_sorted, n =10), horiz = TRUE, cex.names = 0.7, las = 1, main = questions[questions$id == 62,]$body)
+```
+
+Looks good, but what is that "disturb" in the middle?
+
+```{r}
+poll_62$text[grep('disturb', poll_62$text)]
+```
+
+As we can see, this approach doesn't consider the context of the answer (and the question), so it's always good to check what is hiding behind the numbers. 
+
+# Sentiments
+
+So, word frequency gave us some keywords for our answers, let's check which ones of them are positive.
+
+```{r}
+sentiments <- get_nrc_sentiment(c('good', 'friendly', 'work', 'just', 'fine'))[9:10]
+rownames(sentiments) <- c('good', 'friendly', 'work', 'just', 'fine')
+sentiments
+```
+
+We can do the same for answers to the question.
+
+```{r}
+barplot(sort(colSums(poll_62$answer_sentiment)), horiz = TRUE, cex.names = 0.7, las = 1, main= questions[questions$id == 62,]$body)
+```
+
+Or even for the entire topic.
+
+```{r}
+sentiments_by_topic <- do.call(rbind.data.frame, by(answers, answers$topic_id, function(x) colSums(x$answer_sentiment), simplify = F))
+colnames(sentiments_by_topic) <- colnames(answers$answer_sentiment)
+rownames(sentiments_by_topic) <- sapply(rownames(sentiments_by_topic), topic.title)
+
+for (i in c(1,4,5)) {
+  barplot(
+    as.matrix(sort(sentiments_by_topic[i,])), 
+    horiz = TRUE, 
+    cex.names = 0.7, 
+    las = 1, 
+    main = rownames(sentiments_by_topic)[i]
+  )
+}
+```
+
+And for the whole company.
+
+```{r}
+barplot(sort(colSums(answers$answer_sentiment)), horiz = TRUE, cex.names = 0.7, las = 1, main="Commulative sentiments for all answers")
+```
+
+We can also combine word frequencies and sentiments.
+
+```{r}
+corpus <- Corpus(VectorSource(paste(answers$text, collapse = ' ')))
+corpus <- tm_map(corpus, prepareString)
+corpus <- tm_map(corpus, PlainTextDocument)
+unigram_sparse_dtm <- buildDTMatrix(corpus, 1, 1)
+matrix <- as.matrix(unigram_sparse_dtm)
+uni_sorted <- matrix[1,order(matrix[1,])]
+sentiments <- get_nrc_sentiment(names(uni_sorted)) * uni_sorted
+sentiments <- sentiments[1:8]
+
+for (i in 1:nrow(sentiments)) {
+  row = sentiments[i,]
+  if (sum(row) > 0) {
+    row = row / sum(row)
+    sentiments[i,] = row 
+  }
+}
+
+indicies = list()
+for (name in colnames(sentiments)) {
+  indicies[[name]] <- as.numeric(rownames(sentiments[sentiments[name] >= 0.5,]))
+}
+
+par(mfrow=c(2,3))
+for (name in names(indicies)) {
+  if (length(indicies[[name]])) {
+    barplot(tail(uni_sorted[indicies[[name]]], n = 5), horiz = T,cex.names = 0.7, las = 1, main = name)
+  }
+}
+```
+
+We can see that answers are mostly positive, but is it getting better or worse?
+Let's check how sentiments are changing over time.
+
+```{r}
+sentiments_by_survey <- do.call(
+  rbind.data.frame, 
+  by(
+    answers, 
+    answers$survey_template_session_id, 
+    function(x) colMeans(x$answer_sentiment), 
+    simplify = F
+  )
+)
+colnames(sentiments_by_survey) <- colnames(answers$answer_sentiment)
+par(mfrow=c(2,4))
+for (i in 1:8) {
+  plot(
+    1:nrow(sentiments_by_survey),
+    sentiments_by_survey[[i]], 
+    type = 'l',
+    cex.names = 0.7,
+    xlab = '# of surveys',
+    ylab = colnames(sentiments_by_survey)[i],
+    main = colnames(sentiments_by_survey)[i]
+  )
+}
+```
+
+We don't have enough data to be sure but it looks like positive sentiments are used more actively.
+
+# Conlusion
+
+These techniques could be used as a summary/overview of а big amount of text, but we also need to think about tools for more detailed analysis.
