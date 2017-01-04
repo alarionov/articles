@@ -1,9 +1,10 @@
 ---
-title: "Possible features for survey analysis"
+title: "Survey analysis - General Study"
 author: "Artem Larionov"
 date: "September 4, 2016"
 output: html_document
-abstract: In this article I've applied a few techniques of text analysis to see which ones would be useful to analyze surveys.
+abstract: The purpose of this article is to show how simple visualization techniques can be used to better understand trends evident in data gathered from employee surveys and determine directions for future analysis. Typically, such surveys give respondents a few choices when answering a question by simply clicking on a relevant box. In contrast, open-ended surveys, on which this article is based, ask respondents to answer questions in their own words. Here, I've applied a few techniques of text analysis to interpret open ended answers from surveys. 
+
 ---
 
 ```{r setup, include=FALSE}
@@ -71,10 +72,11 @@ custom_questions <- subset(questions, topic_id == 7 & company_id == 3)
 ```
 
 # Introduction
+In this article, I focus specifically on analyzing word frequencies and sentiments to understand tendency in open-ended responses. I use a base plotting system of R for visualization of word frequencies and the “syuzhet” package to retrieve sentiments. The implementation of the analysis itself won't be the main issue here, but if you are interested in this sub-topic, you can find the source code under this [link](https://github.com/alarionov/articles/blob/gh-pages/20160904-survey-analysis/20160904-survey-analysis.Rmd).
 
-Right now I'm not going to focus on details of the implementation, but if you are interested, you can find the source code [here](https://github.com/alarionov/articles/blob/gh-pages/20160904-survey-analysis/20160904-survey-analysis.Rmd).
-
-Let's start with word clouds for questions and answers:
+# Word clouds
+Word clouds (aka tag clouds) are a visual representation of text data used mainly to characterize keyword metadata (tags) on websites or to visualize free form text. They depict the word frequency in a given text as a weighted list. More information on word clouds can be found [here](https://en.wikipedia.org/wiki/Tag_cloud).
+Below you can see word clouds for our questions and answers:
 
 ```{r}
 par(mfrow=c(1,2))
@@ -83,11 +85,10 @@ wordcloud(answers$text, random.order = F, colors = brewer.pal(6, 'Dark2'), main 
 ```
 
 As we could expect, the questions are focused on "what" and "how" about "company" and "work".
-Answers look quite positive with a big "good" in the middle, the biggest "know" is probably related to "don't" right above it :). It might be useful to find those answers and questions to understand whether the employees don't know something important, or just haven't gotten familiar with the survey tool yet :). 
+Answers look quite positive with a big "good" in the middle, the biggest "know" is probably related to "don't" right above it. It might be useful to find those answers and questions to understand whether the employees don't know something important, or just haven't gotten familiar with the survey tool yet. 
 
 # Word frequency
-
-Let's dig deeper. Word frequency can be useful for some kinds of questions because it will summarize all answers into the most common words.
+Word frequency can be useful for certain types of questions because it summarizes all answers into the most common words. Firstly, all answers are being split into separate words. Secondly, we count the frequency of each word. And thirdly, we plot a bar where we show the frequency of each and every word from the text, sorted from the most to the least frequent. Thanks to word frequency method we can see the most frequently used words and trends behind even the biggest number of answers. However, it also ignores the context of the word so, for example, it doesn't understand and show the difference between "very good" and "not very good".
 
 ```{r}
 corpus <- Corpus(VectorSource(paste(poll_62$text, collapse = ' ')))
@@ -100,55 +101,31 @@ par(mar=c(5,5,4,2) + 0.1, mfrow=c(1,1))
 barplot(tail(uni_sorted, n =10), horiz = TRUE, cex.names = 0.7, las = 1, main = questions[questions$id == 62,]$body)
 ```
 
-Looks good, but what is that "disturb" in the middle?
+For instance, in the graph above the word "disturb" actually has positive meaning, because it was used with negation, so it's always good to check what is hiding behind the numbers. 
 
 ```{r}
 poll_62$text[grep('disturb', poll_62$text)]
 ```
 
-As we can see, this approach doesn't consider the context of the answer (and the question), so it's always good to check what is hiding behind the numbers. 
-
 # Sentiments
-
-So, word frequency gave us some keywords for our answers, let's check which ones of them are positive.
+According to Plutchik's theory, there are eight basic emotions: anger, anticipation, disgust, fear, joy, sadness, surprise and trust.
+"Syuzhet" package provides a functionality to check if a word or a sentence is related to these emotions. It also says if it's positive or negative.  
 
 ```{r}
-sentiments <- get_nrc_sentiment(c('good', 'friendly', 'work', 'just', 'fine'))[9:10]
+sentiments <- get_nrc_sentiment(c('good', 'friendly', 'work', 'just', 'fine'))
 rownames(sentiments) <- c('good', 'friendly', 'work', 'just', 'fine')
 sentiments
 ```
 
-We can do the same for answers to the question.
+See the examples of sentiment graphs below.
 
 ```{r}
+par(mfrow = c(2, 1))
 barplot(sort(colSums(poll_62$answer_sentiment)), horiz = TRUE, cex.names = 0.7, las = 1, main= questions[questions$id == 62,]$body)
-```
-
-Or even for the entire topic.
-
-```{r}
-sentiments_by_topic <- do.call(rbind.data.frame, by(answers, answers$topic_id, function(x) colSums(x$answer_sentiment), simplify = F))
-colnames(sentiments_by_topic) <- colnames(answers$answer_sentiment)
-rownames(sentiments_by_topic) <- sapply(rownames(sentiments_by_topic), topic.title)
-
-for (i in c(1,4,5)) {
-  barplot(
-    as.matrix(sort(sentiments_by_topic[i,])), 
-    horiz = TRUE, 
-    cex.names = 0.7, 
-    las = 1, 
-    main = rownames(sentiments_by_topic)[i]
-  )
-}
-```
-
-And for the whole company.
-
-```{r}
 barplot(sort(colSums(answers$answer_sentiment)), horiz = TRUE, cex.names = 0.7, las = 1, main="Commulative sentiments for all answers")
 ```
 
-We can also combine word frequencies and sentiments.
+To demonstrate what words from the provided answers are related to each emotion, we can combine word frequencies and sentiments.
 
 ```{r}
 corpus <- Corpus(VectorSource(paste(answers$text, collapse = ' ')))
@@ -173,7 +150,7 @@ for (name in colnames(sentiments)) {
   indicies[[name]] <- as.numeric(rownames(sentiments[sentiments[name] >= 0.5,]))
 }
 
-par(mfrow=c(2,3))
+par(mfrow=c(3,3))
 for (name in names(indicies)) {
   if (length(indicies[[name]])) {
     barplot(tail(uni_sorted[indicies[[name]]], n = 5), horiz = T,cex.names = 0.7, las = 1, main = name)
@@ -181,8 +158,10 @@ for (name in names(indicies)) {
 }
 ```
 
-We can see that answers are mostly positive, but is it getting better or worse?
-Let's check how sentiments are changing over time.
+Sentiment graph allows to see the common trend behind the big amount of text, but it also ignores the context so it doesn’t show irony, sarcasm or negation.
+
+# Sentiments and time series
+Even though the answers seem mostly positive, they may keep changing over time (see the graphs below).
 
 ```{r}
 sentiments_by_survey <- do.call(
@@ -209,8 +188,5 @@ for (i in 1:8) {
 }
 ```
 
-We don't have enough data to be sure but it looks like positive sentiments are used more actively.
-
 # Conlusion
-
-These techniques could be used as a summary/overview of а big amount of text, but we also need to think about tools for more detailed analysis.
+These techniques allow to understand common trends and could be used as a summary/overview of а big amount of text, but they also require a detailed analysis as to the context.
